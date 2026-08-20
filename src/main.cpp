@@ -13,9 +13,19 @@
 static volatile sig_atomic_t g_child_pid = 0;
 
 // careful in here: only async-signal-safe calls. kill() is ok, printf is not.
+static const unsigned GRACE_SECONDS = 5;
+
 static void forward_to_child(int sig) {
     if (g_child_pid > 0) {
         kill(-g_child_pid, sig);   // negative pid = the whole group
+        alarm(GRACE_SECONDS);      // start the clock, SIGALRM finishes the job
+    }
+}
+
+// grace period expired and it is still around
+static void escalate_to_kill(int) {
+    if (g_child_pid > 0) {
+        kill(-g_child_pid, SIGKILL);
     }
 }
 
@@ -26,6 +36,9 @@ static void install_handlers() {
     sa.sa_flags = 0;   // no SA_RESTART on purpose, we want EINTR from waitpid
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
+
+    sa.sa_handler = escalate_to_kill;
+    sigaction(SIGALRM, &sa, nullptr);
 }
 
 int main(int argc, char** argv) {

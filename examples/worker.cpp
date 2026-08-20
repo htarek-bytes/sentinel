@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
 #include <unistd.h>
 
 int main(int argc, char** argv) {
@@ -8,6 +9,10 @@ int main(int argc, char** argv) {
     if (std::strcmp(mode, "ok") == 0)    { std::printf("worker: done\n"); return 0; }
     if (std::strcmp(mode, "fail") == 0)  { std::fprintf(stderr, "worker: failing\n"); return 3; }
     if (std::strcmp(mode, "crash") == 0) { std::abort(); }
+    if (std::strcmp(mode, "stubborn") == 0) {
+        signal(SIGTERM, SIG_IGN);   // refuse to die politely
+        for (;;) { std::printf("worker: ignoring sigterm\n"); std::fflush(stdout); sleep(1); }
+    }
     if (std::strcmp(mode, "sleep") == 0) {
         for (;;) { std::printf("worker: alive\n"); std::fflush(stdout); sleep(1); }
     }

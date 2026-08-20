@@ -24,3 +24,12 @@ add_test(NAME missing_args   COMMAND ${EXPECT} 1   $<TARGET_FILE:sentinel>)
 add_test(NAME signal_forwarding
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/signal_forwarding.sh
                  $<TARGET_FILE:sentinel> $<TARGET_FILE:worker>)
+
+add_test(NAME sigkill_escalation
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/sigkill_escalation.sh
+                 $<TARGET_FILE:sentinel> $<TARGET_FILE:worker>)
+
+# these two block waiting on a child, so cap them rather than let a
+# regression hang the runner for the default 1500 seconds
+set_tests_properties(signal_forwarding PROPERTIES TIMEOUT 30)
+set_tests_properties(sigkill_escalation PROPERTIES TIMEOUT 30)
