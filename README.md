@@ -26,6 +26,9 @@ process groups.
 - Exits with the child's own status, so it composes with shell scripts and CI
 - Forwards SIGINT and SIGTERM to the child instead of orphaning it
 - Puts the child in its own process group, so grandchildren get signalled too
+- Escalates to SIGKILL if the child ignores SIGTERM for five seconds
+- Blocks signals around the fork so nothing slips through before the handlers
+  are installed
 
 ## Build
 

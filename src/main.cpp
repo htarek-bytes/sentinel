@@ -47,6 +47,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // block these two before forking, otherwise a signal can land in the gap
+    // before install_handlers() runs and kill us while the child lives on
+    sigset_t mask, old;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGTERM);
+    sigprocmask(SIG_BLOCK, &mask, &old);
+
     pid_t pid = fork();
     if (pid < 0) {
         std::fprintf(stderr, "sentinel: fork failed: %s\n", std::strerror(errno));
@@ -54,6 +62,10 @@ int main(int argc, char** argv) {
     }
 
     if (pid == 0) {
+        // exec keeps the mask, so put it back. otherwise whatever we launch
+        // starts out unable to catch SIGINT or SIGTERM
+        sigprocmask(SIG_SETMASK, &old, nullptr);
+
         setpgid(0, 0);   // own group, so signals reach grandchildren too
 
         // argv is already NULL terminated so &argv[1] works as the arg vector
@@ -68,9 +80,7 @@ int main(int argc, char** argv) {
     setpgid(pid, pid);   // do it on both sides, whichever wins is fine
     g_child_pid = pid;
     install_handlers();
-
-    // TODO a signal landing between the fork and the line above still kills us
-    // and leaves the child orphaned. sigprocmask around the fork would fix it
+    sigprocmask(SIG_SETMASK, &old, nullptr);   // handlers are up, safe now
 
     std::printf("sentinel: started '%s' as pid %d\n", argv[1], pid);
     std::fflush(stdout);
