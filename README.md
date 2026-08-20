@@ -53,6 +53,7 @@ cd build
 ./sentinel ./worker fail    # exits 3
 ./sentinel ./worker crash   # dies on SIGABRT
 ./sentinel ./worker sleep   # runs until you stop it
+./sentinel ./worker stubborn # ignores SIGTERM, forces the SIGKILL path
 ```
 
 A normal failure propagates the child's code:
@@ -105,8 +106,16 @@ rather than the kernel silently restarting the syscall.
 Signals go to the child's whole process group, not just the direct child, so a
 child that spawned its own children takes the tree down with it.
 
+A child that ignores SIGTERM gets five seconds of grace, then SIGKILL, which
+cannot be caught or ignored. The handler arms `alarm(5)` after forwarding, and
+a SIGALRM handler does the killing, so both halves stay async-signal-safe.
+
+```sh
+./sentinel ./worker stubborn &
+kill -TERM %1       # ignored, dies ~5s later, sentinel reports 137
+```
+
 ## Planned
 
-- Escalate to SIGKILL when a child ignores SIGTERM
 - Restart on unexpected exit, with backoff
 - Expose restart and crash counters as Prometheus metrics
