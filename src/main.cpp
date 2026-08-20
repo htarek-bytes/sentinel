@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -46,6 +47,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: %s <program> [args...]\n", argv[0]);
         return 1;
     }
+
+    // ask the kernel to reparent orphaned descendants to us instead of pid 1.
+    // without this the loop further down never sees an orphan to reap
+    prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
 
     // block these two before forking, otherwise a signal can land in the gap
     // before install_handlers() runs and kill us while the child lives on
