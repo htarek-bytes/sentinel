@@ -3,11 +3,40 @@
 // Usage: sentinel <program> [args...]
 
 #include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 
 #include <sys/wait.h>
 #include <unistd.h>
+
+namespace {
+
+// Written by main, read inside the signal handler. sig_atomic_t is the only
+// type guaranteed to be accessed atomically from signal context.
+volatile sig_atomic_t g_child_pid = 0;
+
+// Runs in signal context, so it may call only async-signal-safe functions.
+// kill() is on that list. printf and malloc are not, which is why this
+// handler does one thing and nothing else.
+void forward_to_child(int sig) {
+    if (g_child_pid > 0) {
+        kill(g_child_pid, sig);
+    }
+}
+
+void install_forwarding_handlers() {
+    struct sigaction sa{};
+    sa.sa_handler = forward_to_child;
+    sigemptyset(&sa.sa_mask);
+    // Deliberately no SA_RESTART: we want waitpid to return EINTR rather than
+    // silently restarting, so the reap loop stays under our control.
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -33,6 +62,14 @@ int main(int argc, char** argv) {
     }
 
     // Parent: the child is running concurrently from here on.
+    //
+    // Note the ordering. Publishing the pid before installing the handlers
+    // means a signal arriving in between still leaves sentinel on the default
+    // disposition, which kills it and orphans the child. That window is
+    // narrow but real, and closing it needs sigprocmask.
+    g_child_pid = pid;
+    install_forwarding_handlers();
+
     std::printf("sentinel: started '%s' as pid %d\n", argv[1], pid);
     std::fflush(stdout);
 
