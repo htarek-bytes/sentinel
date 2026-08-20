@@ -1,6 +1,5 @@
-// sentinel: launch a child process, wait for it, and report how it ended.
-//
-// Usage: sentinel <program> [args...]
+// sentinel - runs a child process and reports how it died
+// usage: sentinel <program> [args...]
 
 #include <cerrno>
 #include <csignal>
@@ -10,33 +9,24 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-namespace {
+// the handler reads this, so it has to be sig_atomic_t
+static volatile sig_atomic_t g_child_pid = 0;
 
-// Written by main, read inside the signal handler. sig_atomic_t is the only
-// type guaranteed to be accessed atomically from signal context.
-volatile sig_atomic_t g_child_pid = 0;
-
-// Runs in signal context, so it may call only async-signal-safe functions.
-// kill() is on that list. printf and malloc are not, which is why this
-// handler does one thing and nothing else.
-void forward_to_child(int sig) {
+// careful in here: only async-signal-safe calls. kill() is ok, printf is not.
+static void forward_to_child(int sig) {
     if (g_child_pid > 0) {
-        kill(g_child_pid, sig);
+        kill(-g_child_pid, sig);   // negative pid = the whole group
     }
 }
 
-void install_forwarding_handlers() {
+static void install_handlers() {
     struct sigaction sa{};
     sa.sa_handler = forward_to_child;
     sigemptyset(&sa.sa_mask);
-    // Deliberately no SA_RESTART: we want waitpid to return EINTR rather than
-    // silently restarting, so the reap loop stays under our control.
-    sa.sa_flags = 0;
+    sa.sa_flags = 0;   // no SA_RESTART on purpose, we want EINTR from waitpid
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 }
-
-}  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -51,31 +41,28 @@ int main(int argc, char** argv) {
     }
 
     if (pid == 0) {
-        // Child: replace this process image with the requested program.
-        // argv is NULL-terminated, so &argv[1] is a valid argument vector.
+        setpgid(0, 0);   // own group, so signals reach grandchildren too
+
+        // argv is already NULL terminated so &argv[1] works as the arg vector
         execvp(argv[1], &argv[1]);
 
-        // Only reached if exec failed. Use _exit so we don't flush the
-        // stdio buffers this process inherited from the parent.
+        // we only get here if exec failed. _exit, not exit, otherwise we flush
+        // the stdio buffers we inherited from the parent and print things twice
         std::fprintf(stderr, "sentinel: exec '%s' failed: %s\n", argv[1], std::strerror(errno));
         _exit(127);
     }
 
-    // Parent: the child is running concurrently from here on.
-    //
-    // Note the ordering. Publishing the pid before installing the handlers
-    // means a signal arriving in between still leaves sentinel on the default
-    // disposition, which kills it and orphans the child. That window is
-    // narrow but real, and closing it needs sigprocmask.
+    setpgid(pid, pid);   // do it on both sides, whichever wins is fine
     g_child_pid = pid;
-    install_forwarding_handlers();
+    install_handlers();
+
+    // TODO a signal landing between the fork and the line above still kills us
+    // and leaves the child orphaned. sigprocmask around the fork would fix it
 
     std::printf("sentinel: started '%s' as pid %d\n", argv[1], pid);
     std::fflush(stdout);
 
-    // waitpid returns EINTR if a signal arrives while we are blocked. That is
-    // not an error, it means "interrupted, ask again". Retrying here keeps the
-    // reap correct once signal handlers exist.
+    // EINTR here just means a signal woke us up, not a real failure
     int status = 0;
     pid_t reaped;
     do {
@@ -96,7 +83,7 @@ int main(int argc, char** argv) {
     if (WIFSIGNALED(status)) {
         int sig = WTERMSIG(status);
         std::printf("sentinel: pid %d killed by signal %d (%s)\n", pid, sig, strsignal(sig));
-        return 128 + sig;
+        return 128 + sig;   // shell convention
     }
 
     std::fprintf(stderr, "sentinel: pid %d ended in an unexpected way\n", pid);
