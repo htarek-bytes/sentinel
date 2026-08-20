@@ -8,17 +8,50 @@ on:
 
 jobs:
   build:
+    name: build
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 
-      - name: Build
+      - name: Compile
         run: cmake --build build
 
-      - name: Test
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-dir
+          path: build/
+          retention-days: 1
+
+  test:
+    name: test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: build-dir
+          path: build/
+
+      # artifacts do not preserve file modes, so the binaries come back
+      # without the executable bit and ctest cannot run them
+      - name: Restore executable bits
+        run: chmod +x build/sentinel build/worker
+
+      - name: Run ctest
         run: ctest --test-dir build --output-on-failure
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint the test scripts
+        run: shellcheck tests/*.sh
