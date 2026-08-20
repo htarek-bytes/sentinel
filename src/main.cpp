@@ -85,16 +85,24 @@ int main(int argc, char** argv) {
     std::printf("sentinel: started '%s' as pid %d\n", argv[1], pid);
     std::fflush(stdout);
 
-    // EINTR here just means a signal woke us up, not a real failure
+    // reap whatever turns up, not only our own child. running as pid 1 we
+    // inherit orphans and there is nobody else left to clean them up
     int status = 0;
-    pid_t reaped;
-    do {
-        reaped = waitpid(pid, &status, 0);
-    } while (reaped < 0 && errno == EINTR);
+    for (;;) {
+        pid_t reaped = waitpid(-1, &status, 0);
 
-    if (reaped < 0) {
-        std::fprintf(stderr, "sentinel: waitpid failed: %s\n", std::strerror(errno));
-        return 1;
+        if (reaped < 0) {
+            if (errno == EINTR) {
+                continue;   // a signal woke us, just ask again
+            }
+            std::fprintf(stderr, "sentinel: waitpid failed: %s\n", std::strerror(errno));
+            return 1;
+        }
+
+        if (reaped == pid) {
+            break;   // that was the child we launched, go report on it
+        }
+        // anything else was an orphan we adopted. it is reaped, keep waiting
     }
 
     if (WIFEXITED(status)) {
