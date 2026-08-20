@@ -36,8 +36,16 @@ int main(int argc, char** argv) {
     std::printf("sentinel: started '%s' as pid %d\n", argv[1], pid);
     std::fflush(stdout);
 
+    // waitpid returns EINTR if a signal arrives while we are blocked. That is
+    // not an error, it means "interrupted, ask again". Retrying here keeps the
+    // reap correct once signal handlers exist.
     int status = 0;
-    if (waitpid(pid, &status, 0) < 0) {
+    pid_t reaped;
+    do {
+        reaped = waitpid(pid, &status, 0);
+    } while (reaped < 0 && errno == EINTR);
+
+    if (reaped < 0) {
         std::fprintf(stderr, "sentinel: waitpid failed: %s\n", std::strerror(errno));
         return 1;
     }
