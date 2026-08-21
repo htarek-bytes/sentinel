@@ -134,6 +134,17 @@ that dies the moment it starts cannot spin the machine. A child that stays up
 for ten seconds counts as healthy and resets the pause back to one, otherwise
 an occasional crash would eventually inherit a long delay from hours earlier.
 
+On the way out it prints what it saw:
+
+```
+sentinel: 2 restarts, 0 crashes, 3 failures
+```
+
+A crash means the child was killed by a signal. A failure means it exited on
+its own with a nonzero code. Keeping them apart matters because they usually
+have different causes, and these are the numbers the metrics endpoint will
+expose later.
+
 SIGTERM stops the supervisor as well as the child. Without that, stopping
 sentinel would just make it launch a replacement.
 
