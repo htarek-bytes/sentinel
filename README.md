@@ -31,7 +31,7 @@ process groups.
   are installed
 - Adopts orphaned descendants and reaps them, so zombies do not pile up
 - Ships as a container image where it runs as pid 1
-- Restarts the child on request instead of exiting with it
+- Restarts the child on request, backing off 1s, 2s, 4s and so on up to 16s
 
 ## Build
 
@@ -121,6 +121,22 @@ a SIGALRM handler does the killing, so both halves stay async-signal-safe.
 kill -TERM %1       # ignored, dies ~5s later, sentinel reports 137
 ```
 
+## Restarting
+
+`--restart` keeps the child alive instead of exiting with it:
+
+```sh
+sentinel --restart ./worker fail
+```
+
+The pause doubles after each death, from one second up to sixteen, so a program
+that dies the moment it starts cannot spin the machine. A child that stays up
+for ten seconds counts as healthy and resets the pause back to one, otherwise
+an occasional crash would eventually inherit a long delay from hours earlier.
+
+SIGTERM stops the supervisor as well as the child. Without that, stopping
+sentinel would just make it launch a replacement.
+
 ## Container
 
 Sentinel is built as a two stage image. The compiler and cmake live in the
@@ -147,5 +163,4 @@ really sentinel, and that the container stops promptly.
 
 ## Planned
 
-- Back off between restarts instead of a flat one second delay
 - Expose restart and crash counters as Prometheus metrics

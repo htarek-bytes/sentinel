@@ -5,6 +5,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 
 #include <sys/prctl.h>
 #include <sys/wait.h>
@@ -18,7 +19,12 @@ static volatile sig_atomic_t g_stopping = 0;
 
 // careful in here: only async-signal-safe calls. kill() is ok, printf is not.
 static const unsigned GRACE_SECONDS = 5;
-static const unsigned RESTART_DELAY_SECONDS = 1;
+static const unsigned BACKOFF_MIN_SECONDS = 1;
+static const unsigned BACKOFF_MAX_SECONDS = 16;
+
+// a child that stayed up this long counts as healthy, so the next crash starts
+// the backoff over instead of inheriting a long delay from hours ago
+static const unsigned HEALTHY_RUN_SECONDS = 10;
 
 static void forward_to_child(int sig) {
     g_stopping = 1;
@@ -148,7 +154,11 @@ int main(int argc, char** argv) {
     // without this the loop in run_once never sees an orphan to reap
     prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
 
+    unsigned backoff = BACKOFF_MIN_SECONDS;
+
     for (;;) {
+        time_t started = time(nullptr);
+
         int status = 0;
         pid_t pid = run_once(&argv[first], &status);
         if (pid < 0) {
@@ -163,11 +173,20 @@ int main(int argc, char** argv) {
             return code;
         }
 
-        // wait a beat before going again. a program that dies instantly would
-        // otherwise spin as fast as fork can go. the next commit makes this
-        // back off properly instead of using one flat second.
-        sleep(RESTART_DELAY_SECONDS);
-        std::printf("sentinel: restarting '%s'\n", argv[first]);
+        if (time(nullptr) - started >= (time_t)HEALTHY_RUN_SECONDS) {
+            backoff = BACKOFF_MIN_SECONDS;   // it was up a while, start over
+        }
+
+        std::printf("sentinel: restarting '%s' in %us\n", argv[first], backoff);
         std::fflush(stdout);
+
+        sleep(backoff);
+        if (g_stopping) {
+            return code;   // signal landed while we were waiting
+        }
+
+        if (backoff < BACKOFF_MAX_SECONDS) {
+            backoff *= 2;
+        }
     }
 }
