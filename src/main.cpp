@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -47,6 +48,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ask the kernel to reparent orphaned descendants to us instead of pid 1.
+    // without this the loop further down never sees an orphan to reap
+    prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
+
     // block these two before forking, otherwise a signal can land in the gap
     // before install_handlers() runs and kill us while the child lives on
     sigset_t mask, old;
@@ -85,16 +90,24 @@ int main(int argc, char** argv) {
     std::printf("sentinel: started '%s' as pid %d\n", argv[1], pid);
     std::fflush(stdout);
 
-    // EINTR here just means a signal woke us up, not a real failure
+    // reap whatever turns up, not only our own child. running as pid 1 we
+    // inherit orphans and there is nobody else left to clean them up
     int status = 0;
-    pid_t reaped;
-    do {
-        reaped = waitpid(pid, &status, 0);
-    } while (reaped < 0 && errno == EINTR);
+    for (;;) {
+        pid_t reaped = waitpid(-1, &status, 0);
 
-    if (reaped < 0) {
-        std::fprintf(stderr, "sentinel: waitpid failed: %s\n", std::strerror(errno));
-        return 1;
+        if (reaped < 0) {
+            if (errno == EINTR) {
+                continue;   // a signal woke us, just ask again
+            }
+            std::fprintf(stderr, "sentinel: waitpid failed: %s\n", std::strerror(errno));
+            return 1;
+        }
+
+        if (reaped == pid) {
+            break;   // that was the child we launched, go report on it
+        }
+        // anything else was an orphan we adopted. it is reaped, keep waiting
     }
 
     if (WIFEXITED(status)) {

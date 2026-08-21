@@ -29,6 +29,7 @@ process groups.
 - Escalates to SIGKILL if the child ignores SIGTERM for five seconds
 - Blocks signals around the fork so nothing slips through before the handlers
   are installed
+- Adopts orphaned descendants and reaps them, so zombies do not pile up
 
 ## Build
 
