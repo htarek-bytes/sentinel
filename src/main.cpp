@@ -42,16 +42,9 @@ static void install_handlers() {
     sigaction(SIGALRM, &sa, nullptr);
 }
 
-int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <program> [args...]\n", argv[0]);
-        return 1;
-    }
-
-    // ask the kernel to reparent orphaned descendants to us instead of pid 1.
-    // without this the loop further down never sees an orphan to reap
-    prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
-
+// fork, exec, then wait on that child while reaping anything else we adopt.
+// returns the child pid and fills status, or -1 if we could not start it.
+static pid_t run_once(char** args, int* status) {
     // block these two before forking, otherwise a signal can land in the gap
     // before install_handlers() runs and kill us while the child lives on
     sigset_t mask, old;
@@ -63,7 +56,8 @@ int main(int argc, char** argv) {
     pid_t pid = fork();
     if (pid < 0) {
         std::fprintf(stderr, "sentinel: fork failed: %s\n", std::strerror(errno));
-        return 1;
+        sigprocmask(SIG_SETMASK, &old, nullptr);
+        return -1;
     }
 
     if (pid == 0) {
@@ -73,12 +67,12 @@ int main(int argc, char** argv) {
 
         setpgid(0, 0);   // own group, so signals reach grandchildren too
 
-        // argv is already NULL terminated so &argv[1] works as the arg vector
-        execvp(argv[1], &argv[1]);
+        // args is NULL terminated already, it points into our own argv
+        execvp(args[0], args);
 
         // we only get here if exec failed. _exit, not exit, otherwise we flush
         // the stdio buffers we inherited from the parent and print things twice
-        std::fprintf(stderr, "sentinel: exec '%s' failed: %s\n", argv[1], std::strerror(errno));
+        std::fprintf(stderr, "sentinel: exec '%s' failed: %s\n", args[0], std::strerror(errno));
         _exit(127);
     }
 
@@ -87,21 +81,20 @@ int main(int argc, char** argv) {
     install_handlers();
     sigprocmask(SIG_SETMASK, &old, nullptr);   // handlers are up, safe now
 
-    std::printf("sentinel: started '%s' as pid %d\n", argv[1], pid);
+    std::printf("sentinel: started '%s' as pid %d\n", args[0], pid);
     std::fflush(stdout);
 
     // reap whatever turns up, not only our own child. running as pid 1 we
     // inherit orphans and there is nobody else left to clean them up
-    int status = 0;
     for (;;) {
-        pid_t reaped = waitpid(-1, &status, 0);
+        pid_t reaped = waitpid(-1, status, 0);
 
         if (reaped < 0) {
             if (errno == EINTR) {
                 continue;   // a signal woke us, just ask again
             }
             std::fprintf(stderr, "sentinel: waitpid failed: %s\n", std::strerror(errno));
-            return 1;
+            return -1;
         }
 
         if (reaped == pid) {
@@ -110,6 +103,12 @@ int main(int argc, char** argv) {
         // anything else was an orphan we adopted. it is reaped, keep waiting
     }
 
+    g_child_pid = 0;
+    return pid;
+}
+
+// turn a wait status into the exit code we hand back to our own caller
+static int report(pid_t pid, int status) {
     if (WIFEXITED(status)) {
         int code = WEXITSTATUS(status);
         std::printf("sentinel: pid %d exited with code %d\n", pid, code);
@@ -124,4 +123,23 @@ int main(int argc, char** argv) {
 
     std::fprintf(stderr, "sentinel: pid %d ended in an unexpected way\n", pid);
     return 1;
+}
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::fprintf(stderr, "usage: %s <program> [args...]\n", argv[0]);
+        return 1;
+    }
+
+    // ask the kernel to reparent orphaned descendants to us instead of pid 1.
+    // without this the loop in run_once never sees an orphan to reap
+    prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
+
+    int status = 0;
+    pid_t pid = run_once(&argv[1], &status);
+    if (pid < 0) {
+        return 1;
+    }
+
+    return report(pid, status);
 }
