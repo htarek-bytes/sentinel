@@ -1,0 +1,21 @@
+groups:
+  - name: sentinel
+    rules:
+      # a child that keeps dying is the thing worth waking someone for.
+      # a single restart is noise, a stream of them is a crashloop.
+      - alert: SentinelCrashLooping
+        expr: increase(sentinel_restarts_total[2m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "sentinel restarted the child more than 3 times in 2 minutes"
+          description: "the supervised process is not staying up, backoff is stretching"
+
+      - alert: SentinelChildDown
+        expr: sentinel_child_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "no supervised child has been running for 2 minutes"

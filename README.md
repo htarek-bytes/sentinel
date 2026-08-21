@@ -33,6 +33,7 @@ process groups.
 - Ships as a container image where it runs as pid 1
 - Restarts the child on request, backing off 1s, 2s, 4s and so on up to 16s
 - Serves restart, crash and failure counters for Prometheus to scrape
+- Ships a compose stack with Prometheus and Grafana already wired to it
 
 ## Build
 
@@ -202,6 +203,35 @@ on pid 1 would ignore the signal, wait out docker's ten second grace period,
 and get SIGKILLed instead. CI checks both halves on every push: that pid 1 is
 really sentinel, and that the container stops promptly.
 
+## The whole stack
+
+One command brings up sentinel, a Prometheus scraping it, and a Grafana with
+the dashboard already provisioned:
+
+```sh
+docker compose -f deploy/docker-compose.yml up --build
+```
+
+| Service | Where | What for |
+| --- | --- | --- |
+| sentinel | localhost:9101/metrics | the counters |
+| Prometheus | localhost:9090 | scrapes every 5s, evaluates the alert rules |
+| Grafana | localhost:3000 | dashboard, anonymous viewer, no login needed |
+
+The stack deliberately runs `worker crash`, so the child dies over and over and
+the graphs have something real on them. Restart rate climbs, backoff stretches
+the gaps, and `sentinel_child_up` flips between 1 and 0.
+
+Two alert rules ship with it in `deploy/alerts.yml`:
+
+- `SentinelCrashLooping` fires when more than three restarts happen inside two
+  minutes, since one restart is noise and a stream of them is a crashloop
+- `SentinelChildDown` fires when nothing has been running for two minutes
+
+CI brings this whole stack up on every push and fails the build unless
+Prometheus actually reports the sentinel target as up, the restart counter has
+moved, both alert rules loaded, and Grafana is serving the dashboard.
+
 ## Planned
 
-- A compose stack wiring Prometheus and Grafana to the endpoint
+- Terraform to stand the stack up on a cloud VM behind TLS
