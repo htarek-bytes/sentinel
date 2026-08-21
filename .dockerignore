@@ -1,0 +1,8 @@
+.git
+.github
+build
+cmake-build-*
+.idea
+tests
+README.md
+LICENSE
