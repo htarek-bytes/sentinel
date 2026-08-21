@@ -3,7 +3,10 @@ project(sentinel CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+find_package(Threads REQUIRED)
+
 add_executable(sentinel src/main.cpp)
+target_link_libraries(sentinel PRIVATE Threads::Threads)
 add_executable(worker examples/worker.cpp)
 
 enable_testing()
@@ -49,6 +52,10 @@ add_test(NAME counters
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/counters.sh
                  $<TARGET_FILE:sentinel> $<TARGET_FILE:worker>)
 
+add_test(NAME metrics
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/metrics.sh
+                 $<TARGET_FILE:sentinel> $<TARGET_FILE:worker>)
+
 # these two block waiting on a child, so cap them rather than let a
 # regression hang the runner for the default 1500 seconds
 set_tests_properties(signal_forwarding PROPERTIES TIMEOUT 30)
@@ -57,3 +64,4 @@ set_tests_properties(orphan_reaping PROPERTIES TIMEOUT 30)
 set_tests_properties(restart PROPERTIES TIMEOUT 30)
 set_tests_properties(backoff PROPERTIES TIMEOUT 40)
 set_tests_properties(counters PROPERTIES TIMEOUT 40)
+set_tests_properties(metrics PROPERTIES TIMEOUT 40)

@@ -1,13 +1,20 @@
 // sentinel - runs a child process and reports how it died
 // usage: sentinel <program> [args...]
 
+#include <atomic>
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <ctime>
+#include <string>
+#include <thread>
 
+#include <netinet/in.h>
+#include <pthread.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -17,11 +24,11 @@ static volatile sig_atomic_t g_child_pid = 0;
 // set once someone asks us to stop, so the restart loop knows to give up
 static volatile sig_atomic_t g_stopping = 0;
 
-// what we have seen so far. only main touches these for now, the metrics
-// endpoint later on will need them to be atomic
-static unsigned long g_restarts = 0;
-static unsigned long g_crashes  = 0;   // child was killed by a signal
-static unsigned long g_failures = 0;   // child exited with a nonzero code
+// the metrics thread reads these while main writes them, so they are atomic now
+static std::atomic<unsigned long> g_restarts{0};
+static std::atomic<unsigned long> g_crashes{0};    // child was killed by a signal
+static std::atomic<unsigned long> g_failures{0};   // child exited nonzero
+static std::atomic<int> g_child_up{0};             // 1 while a child is running
 
 // careful in here: only async-signal-safe calls. kill() is ok, printf is not.
 static const unsigned GRACE_SECONDS = 5;
@@ -57,6 +64,77 @@ static void install_handlers() {
 
     sa.sa_handler = escalate_to_kill;
     sigaction(SIGALRM, &sa, nullptr);
+}
+
+static std::string metrics_body() {
+    std::string out;
+    out += "# HELP sentinel_restarts_total Times the child has been relaunched.\n";
+    out += "# TYPE sentinel_restarts_total counter\n";
+    out += "sentinel_restarts_total " + std::to_string(g_restarts.load()) + "\n";
+    out += "# HELP sentinel_crashes_total Times the child was killed by a signal.\n";
+    out += "# TYPE sentinel_crashes_total counter\n";
+    out += "sentinel_crashes_total " + std::to_string(g_crashes.load()) + "\n";
+    out += "# HELP sentinel_failures_total Times the child exited with a nonzero code.\n";
+    out += "# TYPE sentinel_failures_total counter\n";
+    out += "sentinel_failures_total " + std::to_string(g_failures.load()) + "\n";
+    out += "# HELP sentinel_child_up Whether a child is running right now.\n";
+    out += "# TYPE sentinel_child_up gauge\n";
+    out += "sentinel_child_up " + std::to_string(g_child_up.load()) + "\n";
+    return out;
+}
+
+// runs on its own thread. serves one page, whatever path you ask for.
+static void serve_metrics(int port) {
+    // signals are the main thread's business. block them here or the kernel
+    // may deliver SIGTERM to this thread instead, and waitpid would never
+    // see the EINTR it is waiting for
+    sigset_t all;
+    sigfillset(&all);
+    pthread_sigmask(SIG_BLOCK, &all, nullptr);
+
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener < 0) {
+        std::fprintf(stderr, "sentinel: metrics socket failed: %s\n", std::strerror(errno));
+        return;
+    }
+
+    int yes = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons((uint16_t)port);
+
+    if (bind(listener, (sockaddr*)&addr, sizeof(addr)) < 0) {
+        std::fprintf(stderr, "sentinel: cannot bind port %d: %s\n", port, std::strerror(errno));
+        close(listener);
+        return;
+    }
+    listen(listener, 8);
+
+    std::printf("sentinel: metrics on :%d\n", port);
+    std::fflush(stdout);
+
+    for (;;) {
+        int conn = accept(listener, nullptr, nullptr);
+        if (conn < 0) {
+            continue;
+        }
+
+        // drain whatever they sent, there is only one page so we ignore it
+        char scratch[512];
+        recv(conn, scratch, sizeof(scratch), MSG_DONTWAIT);
+
+        std::string body = metrics_body();
+        std::string head = "HTTP/1.1 200 OK\r\n"
+                           "Content-Type: text/plain; version=0.0.4\r\n"
+                           "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                           "Connection: close\r\n\r\n";
+        std::string reply = head + body;
+        send(conn, reply.data(), reply.size(), MSG_NOSIGNAL);
+        close(conn);
+    }
 }
 
 // fork, exec, then wait on that child while reaping anything else we adopt.
@@ -98,6 +176,7 @@ static pid_t run_once(char** args, int* status) {
     install_handlers();
     sigprocmask(SIG_SETMASK, &old, nullptr);   // handlers are up, safe now
 
+    g_child_up = 1;
     std::printf("sentinel: started '%s' as pid %d\n", args[0], pid);
     std::fflush(stdout);
 
@@ -121,12 +200,13 @@ static pid_t run_once(char** args, int* status) {
     }
 
     g_child_pid = 0;
+    g_child_up = 0;
     return pid;
 }
 
 static void print_summary() {
     std::printf("sentinel: %lu restarts, %lu crashes, %lu failures\n",
-                g_restarts, g_crashes, g_failures);
+                g_restarts.load(), g_crashes.load(), g_failures.load());
     std::fflush(stdout);
 }
 
@@ -154,16 +234,32 @@ static int report(pid_t pid, int status) {
 
 int main(int argc, char** argv) {
     bool restart = false;
+    int metrics_port = 0;
     int first = 1;
 
-    if (argc > 1 && std::strcmp(argv[1], "--restart") == 0) {
-        restart = true;
-        first = 2;
+    while (first < argc && std::strncmp(argv[first], "--", 2) == 0) {
+        if (std::strcmp(argv[first], "--restart") == 0) {
+            restart = true;
+            first += 1;
+        } else if (std::strcmp(argv[first], "--metrics-port") == 0 && first + 1 < argc) {
+            metrics_port = std::atoi(argv[first + 1]);
+            first += 2;
+        } else {
+            std::fprintf(stderr, "sentinel: unknown option '%s'\n", argv[first]);
+            return 1;
+        }
     }
 
     if (argc <= first) {
-        std::fprintf(stderr, "usage: %s [--restart] <program> [args...]\n", argv[0]);
+        std::fprintf(stderr,
+                     "usage: %s [--restart] [--metrics-port N] <program> [args...]\n", argv[0]);
         return 1;
+    }
+
+    // detached on purpose. it has no state to clean up and the process going
+    // away takes it with us
+    if (metrics_port > 0) {
+        std::thread(serve_metrics, metrics_port).detach();
     }
 
     // ask the kernel to reparent orphaned descendants to us instead of pid 1.
