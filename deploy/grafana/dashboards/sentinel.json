@@ -1,0 +1,60 @@
+{
+  "uid": "sentinel-overview",
+  "title": "sentinel",
+  "tags": ["sentinel"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Child up",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "down", "color": "red" }, "1": { "text": "up", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        }
+      },
+      "targets": [ { "expr": "sentinel_child_up", "refId": "A" } ]
+    },
+    {
+      "type": "stat",
+      "title": "Restarts",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [ { "expr": "sentinel_restarts_total", "refId": "A" } ]
+    },
+    {
+      "type": "stat",
+      "title": "Crashes (killed by signal)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [ { "expr": "sentinel_crashes_total", "refId": "A" } ]
+    },
+    {
+      "type": "stat",
+      "title": "Failures (nonzero exit)",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [ { "expr": "sentinel_failures_total", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Restart rate per minute",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 15 } } },
+      "targets": [ { "expr": "rate(sentinel_restarts_total[1m]) * 60", "legendFormat": "restarts/min", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Crashes vs failures",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 15 } } },
+      "targets": [
+        { "expr": "increase(sentinel_crashes_total[1m])", "legendFormat": "crashes", "refId": "A" },
+        { "expr": "increase(sentinel_failures_total[1m])", "legendFormat": "failures", "refId": "B" }
+      ]
+    }
+  ]
+}

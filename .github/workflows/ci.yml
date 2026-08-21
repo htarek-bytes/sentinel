@@ -81,3 +81,68 @@ jobs:
             echo "the container ignored SIGTERM and had to be killed"
             exit 1
           fi
+
+  compose:
+    name: compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the compose file
+        run: docker compose -f deploy/docker-compose.yml config > /dev/null
+
+      - name: Bring the stack up
+        run: docker compose -f deploy/docker-compose.yml up -d --build
+
+      - name: Prometheus is scraping sentinel
+        run: |
+          up=""
+          for _ in $(seq 1 40); do
+            up=$(curl -sf --get http://localhost:9090/api/v1/query \
+                 --data-urlencode 'query=up{job="sentinel"}' \
+                 | jq -r '.data.result[0].value[1] // empty') || true
+            [ "$up" = "1" ] && break
+            sleep 3
+          done
+          if [ "$up" != "1" ]; then
+            echo "prometheus never reported the sentinel target as up"
+            docker compose -f deploy/docker-compose.yml ps
+            docker compose -f deploy/docker-compose.yml logs --tail=60
+            exit 1
+          fi
+          echo "sentinel target is up"
+
+      - name: The restart counter climbs through Prometheus
+        run: |
+          sleep 25
+          v=$(curl -sf --get http://localhost:9090/api/v1/query \
+               --data-urlencode 'query=sentinel_restarts_total' \
+               | jq -r '.data.result[0].value[1] // empty')
+          echo "sentinel_restarts_total = ${v:-none}"
+          if [ -z "$v" ] || [ "${v%%.*}" -lt 1 ]; then
+            echo "the counter never moved, so nothing is really being scraped"
+            docker compose -f deploy/docker-compose.yml logs --tail=60
+            exit 1
+          fi
+
+      - name: Alert rules are loaded
+        run: |
+          n=$(curl -sf http://localhost:9090/api/v1/rules | jq '[.data.groups[].rules[]] | length')
+          echo "prometheus loaded $n alert rule(s)"
+          [ "$n" -ge 2 ]
+
+      - name: Grafana serves the provisioned dashboard
+        run: |
+          code=""
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/health) || true
+            [ "$code" = "200" ] && break
+            sleep 3
+          done
+          [ "$code" = "200" ] || { echo "grafana never became healthy"; exit 1; }
+          curl -sf 'http://localhost:3000/api/search?query=sentinel' | jq -e 'length > 0' > /dev/null
+          echo "dashboard is provisioned"
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v
