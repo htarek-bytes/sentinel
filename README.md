@@ -30,6 +30,7 @@ process groups.
 - Blocks signals around the fork so nothing slips through before the handlers
   are installed
 - Adopts orphaned descendants and reaps them, so zombies do not pile up
+- Ships as a container image where it runs as pid 1
 
 ## Build
 
@@ -118,6 +119,30 @@ a SIGALRM handler does the killing, so both halves stay async-signal-safe.
 ./sentinel ./worker stubborn &
 kill -TERM %1       # ignored, dies ~5s later, sentinel reports 137
 ```
+
+## Container
+
+Sentinel is built as a two stage image. The compiler and cmake live in the
+build stage and get thrown away, so the runtime image carries nothing but the
+two binaries.
+
+```sh
+docker build -t sentinel .
+docker run --rm sentinel /usr/local/bin/worker fail    # exits 3, same as before
+```
+
+Sentinel is the entrypoint, so it lands on pid 1 and whatever you pass becomes
+the program it supervises. That is the case the whole project is aimed at.
+
+```sh
+docker run -d --name demo sentinel /usr/local/bin/worker sleep
+time docker stop demo
+```
+
+That returns in well under a second. A program with no SIGTERM handler sitting
+on pid 1 would ignore the signal, wait out docker's ten second grace period,
+and get SIGKILLed instead. CI checks both halves on every push: that pid 1 is
+really sentinel, and that the container stops promptly.
 
 ## Planned
 

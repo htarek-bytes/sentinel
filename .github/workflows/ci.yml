@@ -55,3 +55,29 @@ jobs:
 
       - name: Lint the test scripts
         run: shellcheck tests/*.sh
+
+  docker:
+    name: docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t sentinel:ci .
+
+      - name: Sentinel is pid 1 inside the container
+        run: docker run --rm sentinel:ci /bin/cat /proc/1/comm | grep -qx sentinel
+
+      - name: Container stops promptly instead of waiting out the timeout
+        run: |
+          docker run -d --name probe sentinel:ci /usr/local/bin/worker sleep
+          sleep 1
+          start=$(date +%s)
+          docker stop probe > /dev/null
+          elapsed=$(( $(date +%s) - start ))
+          docker rm probe > /dev/null
+          echo "docker stop took ${elapsed}s"
+          if [ "$elapsed" -ge 5 ]; then
+            echo "the container ignored SIGTERM and had to be killed"
+            exit 1
+          fi
