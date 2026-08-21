@@ -32,6 +32,7 @@ process groups.
 - Adopts orphaned descendants and reaps them, so zombies do not pile up
 - Ships as a container image where it runs as pid 1
 - Restarts the child on request, backing off 1s, 2s, 4s and so on up to 16s
+- Serves restart, crash and failure counters for Prometheus to scrape
 
 ## Build
 
@@ -46,7 +47,7 @@ used to exercise it.
 ## Usage
 
 ```sh
-sentinel [--restart] <program> [args...]
+sentinel [--restart] [--metrics-port N] <program> [args...]
 ```
 
 ## Try it
@@ -148,6 +149,35 @@ expose later.
 SIGTERM stops the supervisor as well as the child. Without that, stopping
 sentinel would just make it launch a replacement.
 
+## Metrics
+
+`--metrics-port` starts a small HTTP server that serves the counters in the
+text format Prometheus scrapes:
+
+```sh
+sentinel --restart --metrics-port 9090 ./worker fail
+curl localhost:9090/metrics
+```
+
+```
+# HELP sentinel_restarts_total Times the child has been relaunched.
+# TYPE sentinel_restarts_total counter
+sentinel_restarts_total 2
+# TYPE sentinel_crashes_total counter
+sentinel_crashes_total 0
+# TYPE sentinel_failures_total counter
+sentinel_failures_total 3
+# TYPE sentinel_child_up gauge
+sentinel_child_up 0
+```
+
+It runs on its own thread, because the main one sits blocked in `waitpid` and
+cannot also wait in `accept`. The thread blocks every signal for itself, so
+SIGTERM keeps landing on the main thread where the handler lives. Delivering it
+to the metrics thread instead would mean `waitpid` never gets its `EINTR`.
+
+The counters are atomic since two threads touch them.
+
 ## Container
 
 Sentinel is built as a two stage image. The compiler and cmake live in the
@@ -174,4 +204,4 @@ really sentinel, and that the container stops promptly.
 
 ## Planned
 
-- Expose restart and crash counters as Prometheus metrics
+- A compose stack wiring Prometheus and Grafana to the endpoint
