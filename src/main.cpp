@@ -17,6 +17,12 @@ static volatile sig_atomic_t g_child_pid = 0;
 // set once someone asks us to stop, so the restart loop knows to give up
 static volatile sig_atomic_t g_stopping = 0;
 
+// what we have seen so far. only main touches these for now, the metrics
+// endpoint later on will need them to be atomic
+static unsigned long g_restarts = 0;
+static unsigned long g_crashes  = 0;   // child was killed by a signal
+static unsigned long g_failures = 0;   // child exited with a nonzero code
+
 // careful in here: only async-signal-safe calls. kill() is ok, printf is not.
 static const unsigned GRACE_SECONDS = 5;
 static const unsigned BACKOFF_MIN_SECONDS = 1;
@@ -118,16 +124,26 @@ static pid_t run_once(char** args, int* status) {
     return pid;
 }
 
+static void print_summary() {
+    std::printf("sentinel: %lu restarts, %lu crashes, %lu failures\n",
+                g_restarts, g_crashes, g_failures);
+    std::fflush(stdout);
+}
+
 // turn a wait status into the exit code we hand back to our own caller
 static int report(pid_t pid, int status) {
     if (WIFEXITED(status)) {
         int code = WEXITSTATUS(status);
+        if (code != 0) {
+            g_failures++;
+        }
         std::printf("sentinel: pid %d exited with code %d\n", pid, code);
         return code;
     }
 
     if (WIFSIGNALED(status)) {
         int sig = WTERMSIG(status);
+        g_crashes++;
         std::printf("sentinel: pid %d killed by signal %d (%s)\n", pid, sig, strsignal(sig));
         return 128 + sig;   // shell convention
     }
@@ -170,6 +186,9 @@ int main(int argc, char** argv) {
         // g_stopping means the signal was aimed at us, not just the child, so
         // stop supervising rather than starting another one
         if (!restart || g_stopping) {
+            if (restart) {
+                print_summary();
+            }
             return code;
         }
 
@@ -182,11 +201,14 @@ int main(int argc, char** argv) {
 
         sleep(backoff);
         if (g_stopping) {
-            return code;   // signal landed while we were waiting
+            print_summary();   // signal landed while we were waiting
+            return code;
         }
 
         if (backoff < BACKOFF_MAX_SECONDS) {
             backoff *= 2;
         }
+
+        g_restarts++;
     }
 }
