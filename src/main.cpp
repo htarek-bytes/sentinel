@@ -13,10 +13,15 @@
 // the handler reads this, so it has to be sig_atomic_t
 static volatile sig_atomic_t g_child_pid = 0;
 
+// set once someone asks us to stop, so the restart loop knows to give up
+static volatile sig_atomic_t g_stopping = 0;
+
 // careful in here: only async-signal-safe calls. kill() is ok, printf is not.
 static const unsigned GRACE_SECONDS = 5;
+static const unsigned RESTART_DELAY_SECONDS = 1;
 
 static void forward_to_child(int sig) {
+    g_stopping = 1;
     if (g_child_pid > 0) {
         kill(-g_child_pid, sig);   // negative pid = the whole group
         alarm(GRACE_SECONDS);      // start the clock, SIGALRM finishes the job
@@ -126,8 +131,16 @@ static int report(pid_t pid, int status) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <program> [args...]\n", argv[0]);
+    bool restart = false;
+    int first = 1;
+
+    if (argc > 1 && std::strcmp(argv[1], "--restart") == 0) {
+        restart = true;
+        first = 2;
+    }
+
+    if (argc <= first) {
+        std::fprintf(stderr, "usage: %s [--restart] <program> [args...]\n", argv[0]);
         return 1;
     }
 
@@ -135,11 +148,26 @@ int main(int argc, char** argv) {
     // without this the loop in run_once never sees an orphan to reap
     prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
 
-    int status = 0;
-    pid_t pid = run_once(&argv[1], &status);
-    if (pid < 0) {
-        return 1;
-    }
+    for (;;) {
+        int status = 0;
+        pid_t pid = run_once(&argv[first], &status);
+        if (pid < 0) {
+            return 1;
+        }
 
-    return report(pid, status);
+        int code = report(pid, status);
+
+        // g_stopping means the signal was aimed at us, not just the child, so
+        // stop supervising rather than starting another one
+        if (!restart || g_stopping) {
+            return code;
+        }
+
+        // wait a beat before going again. a program that dies instantly would
+        // otherwise spin as fast as fork can go. the next commit makes this
+        // back off properly instead of using one flat second.
+        sleep(RESTART_DELAY_SECONDS);
+        std::printf("sentinel: restarting '%s'\n", argv[first]);
+        std::fflush(stdout);
+    }
 }

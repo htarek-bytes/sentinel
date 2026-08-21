@@ -31,6 +31,7 @@ process groups.
   are installed
 - Adopts orphaned descendants and reaps them, so zombies do not pile up
 - Ships as a container image where it runs as pid 1
+- Restarts the child on request instead of exiting with it
 
 ## Build
 
@@ -45,7 +46,7 @@ used to exercise it.
 ## Usage
 
 ```sh
-sentinel <program> [args...]
+sentinel [--restart] <program> [args...]
 ```
 
 ## Try it
@@ -146,5 +147,5 @@ really sentinel, and that the container stops promptly.
 
 ## Planned
 
-- Restart on unexpected exit, with backoff
+- Back off between restarts instead of a flat one second delay
 - Expose restart and crash counters as Prometheus metrics
